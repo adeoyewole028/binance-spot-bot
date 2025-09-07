@@ -8,6 +8,11 @@ from datetime import datetime, timedelta, timezone
 import ccxt
 import pandas as pd
 from dotenv import load_dotenv
+from typing import Dict, Any, List, Optional
+
+# Base paths (absolute) to avoid CWD issues
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+LOG_DIR = os.path.join(BASE_DIR, "logs")
 
 ################################################################################
 # Utility: indicators (EMA, RSI) without TA-Lib
@@ -206,16 +211,16 @@ def generate_signal(df: pd.DataFrame, min_rsi=55, max_rsi=80, lookback=50):
 ################################################################################
 
 def ensure_logs():
-    os.makedirs("logs", exist_ok=True)
-    trade_log = "logs/trades.csv"
+    os.makedirs(LOG_DIR, exist_ok=True)
+    trade_log = os.path.join(LOG_DIR, "trades.csv")
     if not os.path.exists(trade_log):
         with open(trade_log, "w", newline="") as f:
             w = csv.writer(f)
             w.writerow(["time","symbol","side","qty","entry","tp","sl","note"])
 
 def ensure_signal_logs():
-    os.makedirs("logs", exist_ok=True)
-    sig_log = "logs/signals.csv"
+    os.makedirs(LOG_DIR, exist_ok=True)
+    sig_log = os.path.join(LOG_DIR, "signals.csv")
     if not os.path.exists(sig_log):
         with open(sig_log, "w", newline="") as f:
             w = csv.writer(f)
@@ -225,7 +230,7 @@ def ensure_signal_logs():
 
 def log_trade(symbol, side, qty, entry, tp, sl, note=""):
     ensure_logs()
-    with open("logs/trades.csv", "a", newline="") as f:
+    with open(os.path.join(LOG_DIR, "trades.csv"), "a", newline="") as f:
         w = csv.writer(f)
         w.writerow([datetime.utcnow().isoformat(), symbol, side, qty, entry, tp, sl, note])
 
@@ -233,148 +238,172 @@ def log_trade(symbol, side, qty, entry, tp, sl, note=""):
 # Main loop (single pass)
 ################################################################################
 
-def main():
+def run_scan(cfg_overrides: Optional[Dict[str, Any]] = None, execute_trades: bool = True) -> Dict[str, Any]:
+    """Run a single scan with optional config overrides.
+    execute_trades=False will not place orders (dry-run), but will compute would-trade opportunities.
+    """
     cfg = load_config()
-    # Ensure log directory and CSV header are present regardless of trades
+    if cfg_overrides:
+        # Merge overrides (basic types expected)
+        for k, v in cfg_overrides.items():
+            if k in cfg:
+                cfg[k] = v
+
     ensure_logs()
     ensure_signal_logs()
+
     ex = make_exchange(cfg["TESTNET"])
+    messages: List[str] = []
     try:
         markets = ex.load_markets()
         tickers = ex.fetch_tickers()
     except ccxt.NetworkError as e:
-        # Graceful fallback for environments where testnet DNS is blocked
         if cfg["TESTNET"]:
-            print("Testnet unreachable (" + str(e) + "). Falling back to live endpoints for market data. PAPER_TRADING remains enabled.")
+            msg = "Testnet unreachable (" + str(e) + "). Falling back to live endpoints for market data. PAPER_TRADING remains enabled."
+            print(msg)
+            messages.append(msg)
             ex = make_exchange(False)
             try:
                 markets = ex.load_markets()
                 tickers = ex.fetch_tickers()
             except ccxt.NetworkError as e_live:
-                # Try alternative Binance hosts
-                alt_hosts = [
-                    "api1.binance.com",
-                    "api2.binance.com",
-                    "api3.binance.com",
-                    "api-gcp.binance.com",
-                ]
+                alt_hosts = ["api1.binance.com","api2.binance.com","api3.binance.com","api-gcp.binance.com"]
                 last_err = e_live
                 for host in alt_hosts:
                     print(f"Trying alternate Binance host: {host}")
+                    messages.append(f"Trying alternate host: {host}")
                     set_binance_host(ex, host)
                     try:
                         markets = ex.load_markets()
                         tickers = ex.fetch_tickers()
                         print(f"Connected via {host}")
+                        messages.append(f"Connected via {host}")
                         break
                     except ccxt.NetworkError as e_alt:
                         last_err = e_alt
                         continue
                 else:
-                    # No alternate host worked
-                    print("Network error connecting to Binance. Consider setting HTTP_PROXY/HTTPS_PROXY in .env or OS, or use a VPN.")
+                    msg = "Network error connecting to Binance. Consider HTTP_PROXY/HTTPS_PROXY or VPN."
+                    print(msg)
+                    messages.append(msg)
                     raise last_err
         else:
-            # Not testnet: try alternate hosts directly
-            alt_hosts = [
-                "api1.binance.com",
-                "api2.binance.com",
-                "api3.binance.com",
-                "api-gcp.binance.com",
-            ]
+            alt_hosts = ["api1.binance.com","api2.binance.com","api3.binance.com","api-gcp.binance.com"]
             last_err = e
             for host in alt_hosts:
                 print(f"Trying alternate Binance host: {host}")
+                messages.append(f"Trying alternate host: {host}")
                 set_binance_host(ex, host)
                 try:
                     markets = ex.load_markets()
                     tickers = ex.fetch_tickers()
                     print(f"Connected via {host}")
+                    messages.append(f"Connected via {host}")
                     break
                 except ccxt.NetworkError as e_alt:
                     last_err = e_alt
                     continue
             else:
-                print("Network error connecting to Binance. Consider setting HTTP_PROXY/HTTPS_PROXY in .env or OS, or use a VPN.")
+                msg = "Network error connecting to Binance. Consider HTTP_PROXY/HTTPS_PROXY or VPN."
+                print(msg)
+                messages.append(msg)
                 raise last_err
+
     universe = filter_symbols(tickers, base_quote=cfg["BASE_QUOTE"], min_quote_vol=cfg["MIN_24H_QUOTE_VOLUME"])
     universe = universe[: cfg["UNIVERSE_SIZE"]]
-
     print(f"Universe ({len(universe)}): {universe}")
 
-    # Determine equity in quote asset
-    total_quote, free_quote = Broker(ex, cfg["PAPER_TRADING"]).fetch_balance_quote(cfg["BASE_QUOTE"])
-    equity = total_quote if total_quote > 0 else 100.0  # fallback for paper start
+    total_quote, _ = Broker(ex, cfg["PAPER_TRADING"]).fetch_balance_quote(cfg["BASE_QUOTE"])
+    equity = total_quote if total_quote > 0 else 100.0
     risk_amount = equity * cfg["RISK_PER_TRADE"]
 
     open_positions = 0
-    cooldown_map = {}  # symbol -> last trade time
+    cooldown_map: Dict[str, datetime] = {}
+    broker = Broker(ex, cfg["PAPER_TRADING"]) if execute_trades else None
 
-    broker = Broker(ex, cfg["PAPER_TRADING"])
     signals_true = 0
+    signals_out: List[Dict[str, Any]] = []
+    trades_out: List[Dict[str, Any]] = []
 
     for symbol in universe:
         if open_positions >= cfg["MAX_OPEN_POSITIONS"]:
             break
 
-        # Cooldown check
         last_time = cooldown_map.get(symbol)
         if last_time and now_utc() - last_time < timedelta(minutes=cfg["COOLDOWN_MINUTES"]):
             continue
 
-        # Get OHLCV
         try:
             df = fetch_ohlcv_df(ex, symbol, cfg["TIMEFRAME"], limit=max(cfg["LOOKBACK_BARS"]+60, 150))
         except Exception as e:
             print(f"Failed to fetch OHLCV for {symbol}: {e}")
+            messages.append(f"OHLCV error {symbol}: {e}")
             continue
 
         signal = generate_signal(df, cfg["MIN_RSI"], cfg["MAX_RSI"], cfg["LOOKBACK_BARS"])
-        # Diagnostics: compute snapshot metrics and log per symbol
+
+        # Compose diagnostics row
+        df_tmp = df.copy()
+        df_tmp["ema20"] = ema(df_tmp["close"], 20)
+        df_tmp["ema50"] = ema(df_tmp["close"], 50)
+        df_tmp["rsi14"] = rsi(df_tmp["close"], 14)
+        last = df_tmp.iloc[-1]
+        rh = recent_high(df_tmp["high"], cfg["LOOKBACK_BARS"])
+        breakout = bool(last["close"] > rh * 1.001)
+        ema_trend = bool(last["ema20"] > last["ema50"])
+        rsi_ok = bool(cfg["MIN_RSI"] <= last["rsi14"] <= cfg["MAX_RSI"])
+        sig_row = {
+            "symbol": symbol,
+            "close": float(last["close"]),
+            "ema20": float(last["ema20"]),
+            "ema50": float(last["ema50"]),
+            "rsi14": float(last["rsi14"]),
+            "recent_high": float(rh),
+            "breakout": breakout,
+            "ema_trend": ema_trend,
+            "rsi_ok": rsi_ok,
+            "signal": bool(signal),
+        }
+        signals_out.append(sig_row)
+
+        # Append to CSV signals log
         try:
-            df_tmp = df.copy()
-            df_tmp["ema20"] = ema(df_tmp["close"], 20)
-            df_tmp["ema50"] = ema(df_tmp["close"], 50)
-            df_tmp["rsi14"] = rsi(df_tmp["close"], 14)
-            last = df_tmp.iloc[-1]
-            rh = recent_high(df_tmp["high"], cfg["LOOKBACK_BARS"])
-            breakout = last["close"] > rh * 1.001
-            ema_trend = last["ema20"] > last["ema50"]
-            rsi_ok = (cfg["MIN_RSI"] <= last["rsi14"] <= cfg["MAX_RSI"])
-            with open("logs/signals.csv", "a", newline="") as f:
+            with open(os.path.join(LOG_DIR, "signals.csv"), "a", newline="") as f:
                 w = csv.writer(f)
                 w.writerow([
                     datetime.utcnow().isoformat(), symbol,
-                    float(last["close"]), float(last["ema20"]), float(last["ema50"]), float(last["rsi14"]),
-                    float(rh), bool(breakout), bool(ema_trend), bool(rsi_ok), bool(signal)
+                    sig_row["close"], sig_row["ema20"], sig_row["ema50"], sig_row["rsi14"],
+                    sig_row["recent_high"], sig_row["breakout"], sig_row["ema_trend"], sig_row["rsi_ok"], sig_row["signal"]
                 ])
-            if cfg["VERBOSE"]:
-                print(
-                    f"{symbol}: close={last['close']:.6f} ema20={last['ema20']:.6f} ema50={last['ema50']:.6f} "
-                    f"rsi={last['rsi14']:.2f} breakout={breakout} ema_trend={ema_trend} rsi_ok={rsi_ok} signal={signal}"
-                )
         except Exception as e:
-            if cfg["VERBOSE"]:
-                print(f"Signal log failed for {symbol}: {e}")
+            messages.append(f"Signal log write failed {symbol}: {e}")
 
         if not signal:
             continue
         signals_true += 1
 
-        # Determine position size by stop distance
+        # Position sizing
         last_close = float(df["close"].iloc[-1])
         stop_distance = last_close * cfg["STOP_LOSS_PCT"]
         if stop_distance <= 0:
             continue
-        qty = risk_amount / stop_distance  # R = risk_amount
-        # Respect lot size
-        lot_step = markets[symbol]["limits"]["amount"]["step"]
-        qty = floor_to_step(qty, lot_step)
-
+        qty = floor_to_step(risk_amount / stop_distance, markets[symbol]["limits"]["amount"]["step"])
         if qty <= 0:
             continue
 
-        # Execute: market buy, then TP/SL
+        if not execute_trades:
+            trades_out.append({
+                "symbol": symbol,
+                "qty": qty,
+                "entry": last_close,
+                "tp": round_price(last_close * (1 + cfg["TAKE_PROFIT_PCT"]), markets[symbol]["limits"]["price"]["min"] or 1e-6),
+                "sl": round_price(last_close * (1 - cfg["STOP_LOSS_PCT"]), markets[symbol]["limits"]["price"]["min"] or 1e-6),
+                "note": "breakout",
+                "executed": False,
+            })
+            continue
+
+        # Execute order flow
         try:
             order = broker.market_buy(symbol, amount_quote=qty*last_close, markets=markets)
             entry_price = order.get("price") or last_close
@@ -383,11 +412,29 @@ def main():
             open_positions += 1
             cooldown_map[symbol] = now_utc()
             print(f"TRADE {symbol}: qty={qty} entry={entry_price} tp={levels['tp']} sl={levels['sl']}")
+            trades_out.append({
+                "symbol": symbol, "qty": qty, "entry": entry_price, "tp": levels["tp"], "sl": levels["sl"], "note": "breakout", "executed": True
+            })
         except Exception as e:
             print(f"Order failed for {symbol}: {e}")
+            messages.append(f"Order failed {symbol}: {e}")
             continue
 
-    print(f"Scan complete. Signals true: {signals_true}/{len(universe)}. Trades taken: {open_positions}. See logs/signals.csv and logs/trades.csv.")
+    summary = {
+        "universe": universe,
+        "signals_true": signals_true,
+        "universe_size": len(universe),
+        "trades_taken": open_positions,
+        "messages": messages,
+        "paper_trading": cfg["PAPER_TRADING"],
+        "testnet": cfg["TESTNET"],
+    }
+    return {"summary": summary, "signals": signals_out, "trades": trades_out, "config": cfg}
+
+
+def main():
+    result = run_scan()
+    print(f"Scan complete. Signals true: {result['summary']['signals_true']}/{result['summary']['universe_size']}. Trades taken: {result['summary']['trades_taken']}. See logs/signals.csv and logs/trades.csv.")
 
 if __name__ == "__main__":
     main()

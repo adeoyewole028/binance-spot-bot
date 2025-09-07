@@ -1,0 +1,320 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Binance Spot Bot Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0b0d10;
+      --panel: #12161c;
+      --muted: #8aa1b1;
+      --fg: #eef2f6;
+      --accent: #00cc88;
+      --accent-600: #00b67a;
+      --danger: #d95b5b;
+      --border: #202a33;
+      --pill: #16232a;
+      --success: #2fb170;
+      --warn: #c9a227;
+    }
+    html, body { height: 100%; }
+    body { font-family: 'Inter', system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; background: var(--bg); color: var(--fg); }
+    .container { max-width: 1180px; margin: 0 auto; padding: 20px; }
+    header { display:flex; align-items:center; gap:12px; justify-content: space-between; margin-bottom: 10px; }
+    .left { display:flex; align-items:center; gap:12px; }
+    .right { display:flex; align-items:center; gap:8px; }
+    h2 { margin: 0; font-weight: 600; }
+    section { margin-top: 16px; }
+    .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px; }
+    table { border-collapse: collapse; width: 100%; font-size: 14px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+    th, td { border-bottom: 1px solid var(--border); padding: 8px 10px; }
+    th { background: #0f141a; text-align: left; position: sticky; top: 0; z-index: 1; }
+    tbody tr:nth-child(odd) { background: #0f141a; }
+    tbody tr:nth-child(even) { background: #111820; }
+    input[type="number"], input[type="text"], select { width: 120px; }
+    .row { display:flex; gap:10px; align-items:center; flex-wrap: wrap; }
+    .muted { color: var(--muted); font-size: 12px; }
+
+    /* Buttons */
+    .btn { appearance: none; border: 1px solid var(--border); background: #0f141a; color: var(--fg); padding: 8px 12px; border-radius: 8px; cursor: pointer; font-weight: 500; }
+    .btn:hover { background: #0c1217; }
+    .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+    .btn.primary { background: var(--accent); border-color: var(--accent-600); color: #04150f; }
+    .btn.primary:hover { background: var(--accent-600); }
+
+    /* Status pills */
+    .status { display:flex; gap:6px; }
+    .pill { display:inline-flex; align-items:center; gap:6px; font-size: 12px; padding: 4px 8px; border-radius: 999px; background: var(--pill); border: 1px solid var(--border); color: var(--muted); }
+    .pill.on { background: rgba(0,204,136,0.12); color: var(--accent); border-color: rgba(0,204,136,0.25); }
+    .pill.warn { background: rgba(201,162,39,0.12); color: var(--warn); border-color: rgba(201,162,39,0.25); }
+    .pill.danger { background: rgba(217,91,91,0.12); color: var(--danger); border-color: rgba(217,91,91,0.25); }
+
+    /* Cards */
+    .cards { display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+    .card { background: var(--panel); border:1px solid var(--border); border-radius: 12px; padding: 12px; }
+    .card-label { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+    .card-value { font-size: 22px; font-weight: 600; }
+
+  /* Loading overlay */
+  .overlay { position: fixed; inset: 0; background: rgba(255,255,255,0.65); display: none; align-items: center; justify-content: center; z-index: 1000; }
+    .spinner { width: 36px; height: 36px; border: 4px solid #ccc; border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite; margin-right: 10px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="left">
+        <h2>Binance Spot Bot</h2>
+        <div class="status">
+          <span id="paperStatus" class="pill">Paper</span>
+          <span id="testnetStatus" class="pill">Testnet</span>
+        </div>
+      </div>
+      <div class="right">
+        <button id="refresh" class="btn">Refresh</button>
+        <button id="dryScan" class="btn">Dry Scan</button>
+        <button id="liveScan" class="btn primary">Execute Scan</button>
+  <button id="clearSignals" class="btn" title="Clear only signals log">Clear Signals</button>
+  <button id="clearLogs" class="btn" title="Clear signals/trades logs">Clear All Logs</button>
+  <button id="resetParams" class="btn" title="Reset saved parameter overrides">Reset Params</button>
+      </div>
+    </header>
+
+    <section class="panel">
+      <h3 style="margin-top:0">Config</h3>
+      <div id="config" class="row"></div>
+  <div class="muted" style="margin-top:6px">Changes are applied per-scan via overrides (saved in your browser) and do not persist to .env.</div>
+    </section>
+
+    <section>
+      <h3>Summary</h3>
+      <div id="summaryCards" class="cards">
+        <div class="card"><div class="card-label">Signals true</div><div id="sumSignals" class="card-value">0</div></div>
+        <div class="card"><div class="card-label">Universe size</div><div id="sumUniverse" class="card-value">0</div></div>
+        <div class="card"><div class="card-label">Trades taken</div><div id="sumTrades" class="card-value">0</div></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div style="display:flex; align-items:baseline; justify-content:space-between; gap:10px;">
+        <h3 style="margin:0">Signals (latest first)</h3>
+        <span class="muted">Last updated: <span id="signalsUpdated">—</span></span>
+      </div>
+      <div style="overflow:auto; max-height: 45vh; margin-top:8px;">
+        <table id="signals"></table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div style="display:flex; align-items:baseline; justify-content:space-between; gap:10px;">
+        <h3 style="margin:0">Trades (latest first)</h3>
+        <span class="muted">Last updated: <span id="tradesUpdated">—</span></span>
+      </div>
+      <div style="overflow:auto; max-height: 30vh; margin-top:8px;">
+        <table id="trades"></table>
+      </div>
+    </section>
+  </div>
+
+  <!-- Loading Overlay -->
+  <div id="loading" class="overlay">
+    <div style="display:flex; align-items:center; background:#fff; border:1px solid #ddd; padding:12px 16px; border-radius:8px; box-shadow: 0 2px 6px rgba(0,0,0,0.1);">
+      <div class="spinner"></div>
+      <div>Loading…</div>
+    </div>
+  </div>
+
+  <script>
+    // Loading management
+    let pending = 0;
+  const overlay = () => document.getElementById('loading');
+  const buttons = () => [document.getElementById('refresh'), document.getElementById('dryScan'), document.getElementById('liveScan'), document.getElementById('clearSignals'), document.getElementById('clearLogs'), document.getElementById('resetParams')];
+    function setButtonsDisabled(disabled) { buttons().forEach(b => { if (b) b.disabled = disabled; }); }
+    function startLoading() { if (pending === 0) { overlay().style.display = 'flex'; setButtonsDisabled(true); } pending++; }
+    function stopLoading() { pending = Math.max(0, pending - 1); if (pending === 0) { overlay().style.display = 'none'; setButtonsDisabled(false); } }
+
+  const api = async (path, opts={}) => {
+      startLoading();
+      try {
+    const res = await fetch(path, { cache: 'no-store', ...opts });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return await res.json();
+      } finally {
+        stopLoading();
+      }
+    };
+
+    // Local storage for parameter overrides
+    const LS_KEY = 'botOverrides';
+    function loadOverrides() {
+      try { return JSON.parse(localStorage.getItem(LS_KEY) || '{}'); } catch { return {}; }
+    }
+    function saveOverrides(obj) {
+      try { localStorage.setItem(LS_KEY, JSON.stringify(obj || {})); } catch {}
+    }
+    function clearOverrides() {
+      try { localStorage.removeItem(LS_KEY); } catch {}
+    }
+
+    function setStatusPills(cfg) {
+      const paper = document.getElementById('paperStatus');
+      const testnet = document.getElementById('testnetStatus');
+      paper.classList.toggle('on', !!cfg.PAPER_TRADING);
+      paper.textContent = cfg.PAPER_TRADING ? 'Paper: ON' : 'Paper: OFF';
+      testnet.classList.toggle('on', !!cfg.TESTNET);
+      testnet.textContent = cfg.TESTNET ? 'Testnet: ON' : 'Testnet: OFF';
+    }
+
+    async function loadConfig() {
+      const cfg = await api('/config');
+      const overrides = loadOverrides();
+      const effective = { ...cfg, ...overrides };
+      const container = document.getElementById('config');
+      container.innerHTML = '';
+      const editable = ['UNIVERSE_SIZE','MAX_OPEN_POSITIONS','TIMEFRAME','RISK_PER_TRADE','STOP_LOSS_PCT','TAKE_PROFIT_PCT','MIN_RSI','MAX_RSI','LOOKBACK_BARS','MIN_24H_QUOTE_VOLUME','PAPER_TRADING','TESTNET'];
+      setStatusPills(effective);
+      for (const k of editable) {
+        const val = effective[k];
+        const wrap = document.createElement('div');
+        const label = document.createElement('label');
+        label.textContent = k;
+        label.style.marginRight = '6px';
+        let input;
+        if (k === 'TIMEFRAME') {
+          input = document.createElement('select');
+          ['1m','3m','5m','15m','1h','4h'].forEach(v => { const o=document.createElement('option'); o.value=v; o.text=v; if(String(val)===v) o.selected=true; input.appendChild(o); });
+        } else if (typeof val === 'boolean') {
+          input = document.createElement('select');
+          ['true','false'].forEach(v => { const o=document.createElement('option'); o.value=v; o.text=v; if(String(val)===v) o.selected=true; input.appendChild(o); });
+        } else {
+          input = document.createElement('input');
+          input.type = 'text';
+          input.value = val;
+        }
+        input.dataset.key = k;
+        wrap.appendChild(label);
+        wrap.appendChild(input);
+        container.appendChild(wrap);
+      }
+
+      // Persist on change (attach once)
+      if (!container.dataset.ovListener) {
+        container.addEventListener('change', (e) => {
+          const inp = e.target;
+          if (!inp || !inp.dataset || !inp.dataset.key) return;
+          const key = inp.dataset.key;
+          let v = inp.value;
+          if (v === 'true' || v === 'false') v = (v === 'true');
+          else if (!isNaN(Number(v)) && v.trim() !== '' && key !== 'TIMEFRAME') v = Number(v);
+          const cur = loadOverrides();
+          cur[key] = v;
+          saveOverrides(cur);
+        });
+        container.dataset.ovListener = '1';
+      }
+    }
+
+    function renderTable(el, headers, rows, type) {
+      el.innerHTML = '';
+      const thead = document.createElement('thead');
+      const trh = document.createElement('tr');
+      headers.forEach(h => { const th = document.createElement('th'); th.textContent = h; trh.appendChild(th); });
+      thead.appendChild(trh);
+      el.appendChild(thead);
+      const tb = document.createElement('tbody');
+      const boolCols = type==='signals' ? ['breakout','ema_trend','rsi_ok','signal'] : [];
+      const idxMap = Object.fromEntries(headers.map((h,i)=>[h.toLowerCase(), i]));
+      rows.forEach(r => {
+        const tr = document.createElement('tr');
+        r.forEach((c, i) => {
+          const td = document.createElement('td');
+          const key = headers[i]?.toLowerCase?.() || '';
+          if (boolCols.includes(key)) {
+            const val = (String(c).toLowerCase() === 'true');
+            const span = document.createElement('span');
+            span.className = 'pill ' + (val ? 'on' : 'danger');
+            span.textContent = val ? 'Yes' : 'No';
+            td.appendChild(span);
+          } else {
+            td.textContent = c;
+          }
+          tr.appendChild(td);
+        });
+        tb.appendChild(tr);
+      });
+      el.appendChild(tb);
+    }
+
+    async function refreshAll() {
+      await loadConfig();
+  const sig = await api(`/logs/signals?ts=${Date.now()}`);
+      if (sig.headers && sig.rows) {
+        const rows = Array.isArray(sig.rows) ? sig.rows.slice().reverse() : [];
+        renderTable(document.getElementById('signals'), sig.headers, rows, 'signals');
+        document.getElementById('signalsUpdated').textContent = new Date().toLocaleString();
+      }
+  const tr = await api(`/logs/trades?ts=${Date.now()}`);
+      if (tr.headers && tr.rows) {
+        const rows = Array.isArray(tr.rows) ? tr.rows.slice().reverse() : [];
+        renderTable(document.getElementById('trades'), tr.headers, rows, 'trades');
+        document.getElementById('tradesUpdated').textContent = new Date().toLocaleString();
+      }
+    }
+
+    async function scan(dry) {
+      const overrides = {};
+      document.querySelectorAll('#config [data-key]').forEach(inp => {
+        const k = inp.dataset.key; let v = inp.value;
+        if (v === 'true' || v === 'false') { v = (v === 'true'); }
+        else if (!isNaN(Number(v)) && v.trim() !== '') { v = Number(v); }
+        overrides[k] = v;
+      });
+      const res = await api('/scan', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ overrides, dry_run: dry }) });
+  const s = res.summary || {};
+  document.getElementById('sumSignals').textContent = `${s.signals_true}/${s.universe_size}`;
+  document.getElementById('sumUniverse').textContent = `${s.universe_size}`;
+  document.getElementById('sumTrades').textContent = `${s.trades_taken}`;
+  setStatusPills(res.config || {});
+      await refreshAll();
+    }
+
+    document.getElementById('refresh').addEventListener('click', refreshAll);
+    document.getElementById('dryScan').addEventListener('click', () => scan(true));
+    document.getElementById('liveScan').addEventListener('click', () => scan(false));
+    document.getElementById('clearSignals').addEventListener('click', async () => {
+      if (!confirm('Clear SIGNALS log only?')) return;
+      // Optimistically clear UI
+      renderTable(document.getElementById('signals'), ['time','symbol','close','ema20','ema50','rsi14','recent_high','breakout','ema_trend','rsi_ok','signal'], [], 'signals');
+      document.getElementById('signalsUpdated').textContent = new Date().toLocaleString();
+      await api('/logs/signals/clear', { method: 'POST' });
+      alert('Signals cleared.');
+      await refreshAll();
+    });
+    document.getElementById('clearLogs').addEventListener('click', async () => {
+      if (!confirm('Clear BOTH signals.csv and trades.csv? This cannot be undone.')) return;
+      // Optimistically clear UI
+      renderTable(document.getElementById('signals'), ['time','symbol','close','ema20','ema50','rsi14','recent_high','breakout','ema_trend','rsi_ok','signal'], [], 'signals');
+      renderTable(document.getElementById('trades'), ['time','symbol','side','qty','entry','tp','sl','note'], [], 'trades');
+      document.getElementById('signalsUpdated').textContent = new Date().toLocaleString();
+      document.getElementById('tradesUpdated').textContent = new Date().toLocaleString();
+      await api('/logs/clear', { method: 'POST' });
+      alert('All logs cleared.');
+      await refreshAll();
+    });
+
+    // Reset saved parameter overrides
+    document.getElementById('resetParams').addEventListener('click', async () => {
+      if (!confirm('Reset saved parameter overrides?')) return;
+      clearOverrides();
+      await refreshAll();
+    });
+
+  refreshAll();
+  </script>
+</body>
+</html>
