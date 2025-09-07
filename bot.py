@@ -211,6 +211,56 @@ def key_levels(df: pd.DataFrame, pivots: int = 5) -> Dict[str, List[float]]:
     return {'resistance': levels_high, 'support': levels_low}
 
 ################################################################################
+# Mock data for testing/demo when APIs are unavailable
+################################################################################
+
+def generate_mock_ohlcv(symbol: str, timeframe: str, limit: int = 350) -> pd.DataFrame:
+    """Generate realistic mock OHLCV data for demonstration purposes."""
+    import random
+    import numpy as np
+    
+    # Base price for different symbols
+    base_prices = {
+        'BTC/USDT': 45000,
+        'ETH/USDT': 2500,
+        'BNB/USDT': 300,
+        'ADA/USDT': 0.5,
+        'SOL/USDT': 100
+    }
+    
+    base_price = base_prices.get(symbol, 1000)
+    
+    # Generate timestamps
+    now = datetime.now(timezone.utc)
+    tf_minutes = {'1w': 10080, '1d': 1440, '4h': 240, '1h': 60, '15m': 15, '5m': 5}
+    interval_minutes = tf_minutes.get(timeframe, 5)
+    
+    timestamps = []
+    data = []
+    current_price = base_price
+    
+    for i in range(limit):
+        ts = now - timedelta(minutes=(limit - i - 1) * interval_minutes)
+        timestamp_ms = int(ts.timestamp() * 1000)
+        
+        # Add some trend and volatility - smaller changes
+        daily_change = random.uniform(-0.005, 0.005)  # +/- 0.5% per candle max
+        current_price = max(base_price * 0.7, min(base_price * 1.5, current_price * (1 + daily_change)))
+        
+        # OHLCV for this candle
+        high = current_price * random.uniform(1.0, 1.005)
+        low = current_price * random.uniform(0.995, 1.0)
+        open_price = data[-1][4] if data else current_price  # Previous close or current
+        close_price = current_price
+        volume = random.uniform(1000, 50000)
+        
+        data.append([timestamp_ms, open_price, high, low, close_price, volume])
+    
+    df = pd.DataFrame(data, columns=["timestamp", "open", "high", "low", "close", "volume"])
+    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+    return df
+
+################################################################################
 # Trinity analysis
 ################################################################################
 
@@ -220,25 +270,39 @@ def trinity_analyze(symbol: str,
                     bias_tfs: List[str] = None,
                     exec_tfs: List[str] = None,
                     ma_periods = (21, 50, 200),
-                    rsi_period: int = 14) -> Dict[str, Any]:
+                    rsi_period: int = 14,
+                    use_mock_data: bool = False) -> Dict[str, Any]:
     macro_tfs = macro_tfs or ['1w', '1d']
     bias_tfs = bias_tfs or ['4h', '1h']
     exec_tfs = exec_tfs or ['15m', '5m']
 
-    # Create exchange if not given
-    if exchange is None:
+    # Create exchange if not given and not using mock data
+    if exchange is None and not use_mock_data:
         cfg = load_config()
         try:
             exchange = make_exchange(cfg['TESTNET'])
             exchange.load_markets()
         except Exception:
-            exchange = make_exchange(False)
-            exchange.load_markets()
+            try:
+                exchange = make_exchange(False)
+                exchange.load_markets()
+            except Exception as e:
+                # If all API connections fail, switch to mock data mode
+                use_mock_data = True
+                exchange = None
 
     errors: List[str] = []
-
+    
     def fetch_df(tf: str) -> pd.DataFrame:
         limit = 400 if tf in ('1w','1d') else 350
+        
+        if use_mock_data or exchange is None:
+            try:
+                return generate_mock_ohlcv(symbol, tf, limit)
+            except Exception as e:
+                errors.append(f"{tf}: Mock data generation failed: {e}")
+                return pd.DataFrame(columns=["timestamp","open","high","low","close","volume"])
+        
         try:
             data = exchange.fetch_ohlcv(symbol, timeframe=tf, limit=limit)
             df = pd.DataFrame(data, columns=["timestamp","open","high","low","close","volume"])
@@ -270,23 +334,24 @@ def trinity_analyze(symbol: str,
             'above50': bool(price > float(last['sma50'] or price)),
             'above21': bool(price > float(last['sma21'] or price)),
             'rsi': float(last['rsi']) if pd.notnull(last['rsi']) else None,
-            'support': levels['support'][-3:],
-            'resistance': levels['resistance'][-3:],
+            'support': [float(x) for x in levels['support'][-3:]],
+            'resistance': [float(x) for x in levels['resistance'][-3:]],
         })
         # Nearby support/resistance hint
         near_sup = any(near_level(price, lvl) for lvl in levels['support'][-3:])
         near_res = any(near_level(price, lvl) for lvl in levels['resistance'][-3:])
-        out['near_support'] = near_sup
-        out['near_resistance'] = near_res
+        out['near_support'] = bool(near_sup)
+        out['near_resistance'] = bool(near_res)
         # Candles (execution only meaningful on lower tfs but we compute regardless)
-        out['bullish_engulfing'] = is_bullish_engulfing(df)
-        out['hammer'] = is_hammer(df)
+        out['bullish_engulfing'] = bool(is_bullish_engulfing(df))
+        out['hammer'] = bool(is_hammer(df))
         return out
 
     result: Dict[str, Any] = {
         'symbol': symbol,
         'macro': [], 'bias': [], 'execution': [],
-        'confluence': {}
+        'confluence': {},
+        'mock_data': use_mock_data  # Flag to indicate if mock data was used
     }
     # Analyze all tfs
     for tf in macro_tfs:
@@ -337,7 +402,7 @@ def trinity_analyze(symbol: str,
         'bias_ok': bias_ok,
         'execution_ok': exec_ok,
         'score': score,
-    'notes': notes + (["Errors:"] + errors if errors else []),
+        'notes': notes + (["Errors:"] + errors if errors else []) + (["⚠️ Using mock data - API unavailable"] if use_mock_data else []),
     }
     return result
 

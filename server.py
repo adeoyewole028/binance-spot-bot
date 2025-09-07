@@ -55,18 +55,22 @@ def post_scan(req: ScanRequest):
 @app.post("/trinity/analyze")
 def trinity_api(req: TrinityRequest):
     try:
-        cfg = load_config()
         symbol = (req.symbol or '').strip().upper()
         if not symbol or '/' not in symbol:
             raise ValueError("Symbol must be like BTC/USDT")
 
-        ex = make_exchange(cfg.get('TESTNET', True))
+        # Try to create exchange, but gracefully handle failures
+        ex = None
+        network_available = True
+        
         try:
+            cfg = load_config()
+            ex = make_exchange(cfg.get('TESTNET', True))
             ex.load_markets()
         except Exception:
-            # Fallback to live
-            ex = make_exchange(False)
+            # Try fallback to live
             try:
+                ex = make_exchange(False)
                 ex.load_markets()
             except Exception as e_live:
                 # Try alternate hosts
@@ -80,19 +84,29 @@ def trinity_api(req: TrinityRequest):
                         last_err = e_alt
                         continue
                 else:
-                    raise last_err
+                    # All network attempts failed - use mock data
+                    network_available = False
+                    logging.warning("Network unavailable, using mock data for demonstration: %s", str(last_err))
 
         res = trinity_analyze(
             symbol=symbol,
             exchange=ex,
             macro_tfs=req.macro_tfs or ['1w','1d'],
             bias_tfs=req.bias_tfs or ['4h','1h'],
-            exec_tfs=req.exec_tfs or ['15m','5m']
+            exec_tfs=req.exec_tfs or ['15m','5m'],
+            use_mock_data=not network_available
         )
+        
         return JSONResponse(content=res, headers={"Cache-Control": "no-store"})
+        
+    except ValueError as e:
+        # Handle validation errors with 400 status
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logging.error("Trinity analyze failed: %s\n%s", str(e), traceback.format_exc())
-        raise HTTPException(status_code=500, detail=str(e))
+        # Return a more user-friendly error for unexpected failures
+        error_msg = "Analysis failed. This may be due to network connectivity issues or invalid symbol. Please try again or check your internet connection."
+        raise HTTPException(status_code=500, detail=error_msg)
 
 
 @app.get("/logs/signals")

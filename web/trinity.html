@@ -148,6 +148,13 @@
       </section>
 
       <section style="margin-top: 16px">
+        <!-- Mock data warning banner -->
+        <div id="mockWarning" class="panel" style="display: none; border-color: #ffa500; background: rgba(255, 165, 0, 0.1);">
+          <div style="color: #ffa500; font-weight: 500;">
+            ⚠️ Demo Mode: Using mock data for demonstration due to API connectivity issues
+          </div>
+        </div>
+        
         <div class="cards">
           <div class="card">
             <div class="label">Direction</div>
@@ -252,37 +259,59 @@
       }
 
       async function analyze() {
-        const symbol = $("symbol").value.trim();
-        const macro = $("macro")
-          .value.split(",")
-          .map((s) => s.trim())
-          .filter(Boolean);
-        const bias = $("bias")
-          .value.split(",")
-          .map((s) => s.trim())
-          .filter(Boolean);
-        const exec = $("exec")
-          .value.split(",")
-          .map((s) => s.trim())
-          .filter(Boolean);
-        const res = await api("/trinity/analyze", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            symbol,
-            macro_tfs: macro,
-            bias_tfs: bias,
-            exec_tfs: exec,
-          }),
-        });
-        $("dir").textContent = res.confluence.direction;
-        $("biasok").textContent = String(res.confluence.bias_ok);
-        $("execok").textContent = String(res.confluence.execution_ok);
-        $("score").textContent = String(res.confluence.score);
-        renderTable($("macroTbl"), res.macro);
-        renderTable($("biasTbl"), res.bias);
-        renderTable($("execTbl"), res.execution);
-        $("notes").textContent = (res.confluence.notes || []).join("\n");
+        try {
+          // Show loading state
+          $("analyze").textContent = "Analyzing...";
+          $("analyze").disabled = true;
+          
+          const symbol = $("symbol").value.trim();
+          const macro = $("macro")
+            .value.split(",")
+            .map((s) => s.trim())
+            .filter(Boolean);
+          const bias = $("bias")
+            .value.split(",")
+            .map((s) => s.trim())
+            .filter(Boolean);
+          const exec = $("exec")
+            .value.split(",")
+            .map((s) => s.trim())
+            .filter(Boolean);
+          
+          const res = await api("/trinity/analyze", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              symbol,
+              macro_tfs: macro,
+              bias_tfs: bias,
+              exec_tfs: exec,
+            }),
+          });
+          
+          // Show mock data warning if applicable
+          if (res.mock_data) {
+            $("mockWarning").style.display = "block";
+          } else {
+            $("mockWarning").style.display = "none";
+          }
+          
+          $("dir").textContent = res.confluence.direction;
+          $("biasok").textContent = String(res.confluence.bias_ok);
+          $("execok").textContent = String(res.confluence.execution_ok);
+          $("score").textContent = String(res.confluence.score);
+          renderTable($("macroTbl"), res.macro);
+          renderTable($("biasTbl"), res.bias);
+          renderTable($("execTbl"), res.execution);
+          $("notes").textContent = (res.confluence.notes || []).join("\n");
+        } catch (error) {
+          console.error("Analysis failed:", error);
+          alert("Analysis failed: " + (error.message || error));
+        } finally {
+          // Reset button state
+          $("analyze").textContent = "Analyze";
+          $("analyze").disabled = false;
+        }
       }
 
       $("analyze").addEventListener("click", analyze);
