@@ -28,6 +28,9 @@ def rsi(series: pd.Series, period: int = 14) -> pd.Series:
     rs = gain / (loss.replace(0, 1e-12))
     return 100 - (100 / (1 + rs))
 
+def sma(series: pd.Series, window: int) -> pd.Series:
+    return series.rolling(window=window, min_periods=max(2, window//2)).mean()
+
 ################################################################################
 # Exchange setup
 ################################################################################
@@ -129,6 +132,279 @@ def round_price(price, tick_size):
         return price
     precision = max(0, int(round(-math.log10(tick_size), 0)))
     return round(price, precision)
+
+################################################################################
+# Structure and patterns
+################################################################################
+
+def find_pivots(series: pd.Series, left: int = 3, right: int = 3):
+    highs = []
+    lows = []
+    for i in range(left, len(series) - right):
+        window = series[i-left:i+right+1]
+        if series[i] == window.max():
+            highs.append(i)
+        if series[i] == window.min():
+            lows.append(i)
+    return highs, lows
+
+def structure_trend(df: pd.DataFrame, lookback: int = 120) -> str:
+    # Simple HH/HL vs LH/LL check on recent pivots
+    scope = df.tail(lookback)
+    highs_idx, lows_idx = find_pivots(scope['high'].reset_index(drop=True)), find_pivots(scope['low'].reset_index(drop=True))
+    # highs_idx and lows_idx are tuples; unpack
+    h_idx = highs_idx[0] if isinstance(highs_idx, tuple) else highs_idx
+    l_idx = lows_idx[1] if isinstance(lows_idx, tuple) else lows_idx
+    # Fallback: slope of SMA200
+    if len(h_idx) < 2 or len(l_idx) < 2:
+        ma200 = sma(scope['close'], 200)
+        if len(ma200.dropna()) >= 5:
+            s = (ma200.iloc[-1] - ma200.iloc[-5])
+            return 'up' if s > 0 else 'down' if s < 0 else 'sideways'
+        return 'sideways'
+    # Get last two pivot highs/lows values
+    close_vals = scope['close'].reset_index(drop=True)
+    last_highs = [scope['high'].iloc[h] for h in h_idx[-3:]]
+    last_lows = [scope['low'].iloc[l] for l in l_idx[-3:]]
+    hh = last_highs[-1] > last_highs[-2] if len(last_highs) >= 2 else False
+    hl = last_lows[-1] > last_lows[-2] if len(last_lows) >= 2 else False
+    lh = last_highs[-1] < last_highs[-2] if len(last_highs) >= 2 else False
+    ll = last_lows[-1] < last_lows[-2] if len(last_lows) >= 2 else False
+    if hh and hl:
+        return 'up'
+    if lh and ll:
+        return 'down'
+    # fallback to SMA slope
+    ma200 = sma(scope['close'], 200)
+    if len(ma200.dropna()) >= 5:
+        s = (ma200.iloc[-1] - ma200.iloc[-5])
+        return 'up' if s > 0 else 'down' if s < 0 else 'sideways'
+    return 'sideways'
+
+def is_bullish_engulfing(df: pd.DataFrame) -> bool:
+    if len(df) < 2:
+        return False
+    prev = df.iloc[-2]
+    cur = df.iloc[-1]
+    return (cur['close'] > cur['open']) and (prev['close'] < prev['open']) and (cur['close'] >= prev['open']) and (cur['open'] <= prev['close'])
+
+def is_hammer(df: pd.DataFrame) -> bool:
+    if len(df) < 1:
+        return False
+    c = df.iloc[-1]
+    body = abs(c['close'] - c['open'])
+    lower_wick = min(c['open'], c['close']) - c['low']
+    upper_wick = c['high'] - max(c['open'], c['close'])
+    return lower_wick > body * 2 and upper_wick < body
+
+def near_level(price: float, level: float, tolerance: float = 0.005) -> bool:
+    # within 0.5% by default
+    return abs(price - level) / max(1e-9, level) <= tolerance
+
+def key_levels(df: pd.DataFrame, pivots: int = 5) -> Dict[str, List[float]]:
+    h_idx, l_idx = find_pivots(df['high']), find_pivots(df['low'])
+    # unpack
+    highs = h_idx[0] if isinstance(h_idx, tuple) else h_idx
+    lows = l_idx[1] if isinstance(l_idx, tuple) else l_idx
+    levels_high = sorted({float(df['high'].iloc[i]) for i in highs[-pivots:]}, reverse=True)
+    levels_low = sorted({float(df['low'].iloc[i]) for i in lows[-pivots:]})
+    return {'resistance': levels_high, 'support': levels_low}
+
+################################################################################
+# Mock data for testing/demo when APIs are unavailable
+################################################################################
+
+def generate_mock_ohlcv(symbol: str, timeframe: str, limit: int = 350) -> pd.DataFrame:
+    """Generate realistic mock OHLCV data for demonstration purposes."""
+    import random
+    import numpy as np
+    
+    # Base price for different symbols
+    base_prices = {
+        'BTC/USDT': 45000,
+        'ETH/USDT': 2500,
+        'BNB/USDT': 300,
+        'ADA/USDT': 0.5,
+        'SOL/USDT': 100
+    }
+    
+    base_price = base_prices.get(symbol, 1000)
+    
+    # Generate timestamps
+    now = datetime.now(timezone.utc)
+    tf_minutes = {'1w': 10080, '1d': 1440, '4h': 240, '1h': 60, '15m': 15, '5m': 5}
+    interval_minutes = tf_minutes.get(timeframe, 5)
+    
+    timestamps = []
+    data = []
+    current_price = base_price
+    
+    for i in range(limit):
+        ts = now - timedelta(minutes=(limit - i - 1) * interval_minutes)
+        timestamp_ms = int(ts.timestamp() * 1000)
+        
+        # Add some trend and volatility - smaller changes
+        daily_change = random.uniform(-0.005, 0.005)  # +/- 0.5% per candle max
+        current_price = max(base_price * 0.7, min(base_price * 1.5, current_price * (1 + daily_change)))
+        
+        # OHLCV for this candle
+        high = current_price * random.uniform(1.0, 1.005)
+        low = current_price * random.uniform(0.995, 1.0)
+        open_price = data[-1][4] if data else current_price  # Previous close or current
+        close_price = current_price
+        volume = random.uniform(1000, 50000)
+        
+        data.append([timestamp_ms, open_price, high, low, close_price, volume])
+    
+    df = pd.DataFrame(data, columns=["timestamp", "open", "high", "low", "close", "volume"])
+    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+    return df
+
+################################################################################
+# Trinity analysis
+################################################################################
+
+def trinity_analyze(symbol: str,
+                    exchange=None,
+                    macro_tfs: List[str] = None,
+                    bias_tfs: List[str] = None,
+                    exec_tfs: List[str] = None,
+                    ma_periods = (21, 50, 200),
+                    rsi_period: int = 14,
+                    use_mock_data: bool = False) -> Dict[str, Any]:
+    macro_tfs = macro_tfs or ['1w', '1d']
+    bias_tfs = bias_tfs or ['4h', '1h']
+    exec_tfs = exec_tfs or ['15m', '5m']
+
+    # Create exchange if not given and not using mock data
+    if exchange is None and not use_mock_data:
+        cfg = load_config()
+        try:
+            exchange = make_exchange(cfg['TESTNET'])
+            exchange.load_markets()
+        except Exception:
+            try:
+                exchange = make_exchange(False)
+                exchange.load_markets()
+            except Exception as e:
+                # If all API connections fail, switch to mock data mode
+                use_mock_data = True
+                exchange = None
+
+    errors: List[str] = []
+    
+    def fetch_df(tf: str) -> pd.DataFrame:
+        limit = 400 if tf in ('1w','1d') else 350
+        
+        if use_mock_data or exchange is None:
+            try:
+                return generate_mock_ohlcv(symbol, tf, limit)
+            except Exception as e:
+                errors.append(f"{tf}: Mock data generation failed: {e}")
+                return pd.DataFrame(columns=["timestamp","open","high","low","close","volume"])
+        
+        try:
+            data = exchange.fetch_ohlcv(symbol, timeframe=tf, limit=limit)
+            df = pd.DataFrame(data, columns=["timestamp","open","high","low","close","volume"])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
+            return df
+        except Exception as e:
+            errors.append(f"{tf}: {e}")
+            return pd.DataFrame(columns=["timestamp","open","high","low","close","volume"])
+
+    def analyze_tf(df: pd.DataFrame, tf: str) -> Dict[str, Any]:
+        a21, a50, a200 = ma_periods
+        out: Dict[str, Any] = {'timeframe': tf}
+        if len(df) < max(a200+5, rsi_period+5):
+            out['insufficient'] = True
+            return out
+        df = df.copy()
+        df['sma21'] = sma(df['close'], a21)
+        df['sma50'] = sma(df['close'], a50)
+        df['sma200'] = sma(df['close'], a200)
+        df['rsi'] = rsi(df['close'], rsi_period)
+        last = df.iloc[-1]
+        trend = structure_trend(df)
+        levels = key_levels(df)
+        price = float(last['close'])
+        out.update({
+            'price': price,
+            'trend': trend,
+            'above200': bool(price > float(last['sma200'] or price)),
+            'above50': bool(price > float(last['sma50'] or price)),
+            'above21': bool(price > float(last['sma21'] or price)),
+            'rsi': float(last['rsi']) if pd.notnull(last['rsi']) else None,
+            'support': [float(x) for x in levels['support'][-3:]],
+            'resistance': [float(x) for x in levels['resistance'][-3:]],
+        })
+        # Nearby support/resistance hint
+        near_sup = any(near_level(price, lvl) for lvl in levels['support'][-3:])
+        near_res = any(near_level(price, lvl) for lvl in levels['resistance'][-3:])
+        out['near_support'] = bool(near_sup)
+        out['near_resistance'] = bool(near_res)
+        # Candles (execution only meaningful on lower tfs but we compute regardless)
+        out['bullish_engulfing'] = bool(is_bullish_engulfing(df))
+        out['hammer'] = bool(is_hammer(df))
+        return out
+
+    result: Dict[str, Any] = {
+        'symbol': symbol,
+        'macro': [], 'bias': [], 'execution': [],
+        'confluence': {},
+        'mock_data': use_mock_data  # Flag to indicate if mock data was used
+    }
+    # Analyze all tfs
+    for tf in macro_tfs:
+        result['macro'].append(analyze_tf(fetch_df(tf), tf))
+    for tf in bias_tfs:
+        result['bias'].append(analyze_tf(fetch_df(tf), tf))
+    for tf in exec_tfs:
+        result['execution'].append(analyze_tf(fetch_df(tf), tf))
+
+    # Confluence logic
+    notes: List[str] = []
+    macro_up = sum(1 for m in result['macro'] if m.get('trend') == 'up' and m.get('above200')) >= 1
+    macro_down = sum(1 for m in result['macro'] if m.get('trend') == 'down' and not m.get('above200')) >= 1
+    direction = 'none'
+    if macro_up:
+        direction = 'long'
+        notes.append('Macro uptrend and above 200SMA')
+    elif macro_down:
+        direction = 'short'
+        notes.append('Macro downtrend and below 200SMA')
+
+    # Bias: look for pullback near support with RSI 40-55 when macro long; inverse for short
+    bias_ok = False
+    if direction == 'long':
+        for b in result['bias']:
+            if b.get('near_support') and b.get('rsi') is not None and 35 <= b['rsi'] <= 55:
+                bias_ok = True; notes.append(f"Bias {b['timeframe']} near support with RSI reset")
+                break
+    elif direction == 'short':
+        for b in result['bias']:
+            if b.get('near_resistance') and b.get('rsi') is not None and 45 <= b['rsi'] <= 65:
+                bias_ok = True; notes.append(f"Bias {b['timeframe']} near resistance with RSI cool-off")
+                break
+
+    # Execution: candle confirmation on lower tf
+    exec_ok = False
+    for e in result['execution']:
+        if direction == 'long' and (e.get('bullish_engulfing') or e.get('hammer')):
+            exec_ok = True; notes.append(f"Execution candle on {e['timeframe']}")
+            break
+        if direction == 'short':
+            # Placeholder: we didn't implement bearish patterns; skip
+            pass
+
+    score = (1 if direction != 'none' else 0) + (1 if bias_ok else 0) + (1 if exec_ok else 0)
+    result['confluence'] = {
+        'direction': direction,
+        'bias_ok': bias_ok,
+        'execution_ok': exec_ok,
+        'score': score,
+        'notes': notes + (["Errors:"] + errors if errors else []) + (["⚠️ Using mock data - API unavailable"] if use_mock_data else []),
+    }
+    return result
 
 ################################################################################
 # Portfolio/Orders

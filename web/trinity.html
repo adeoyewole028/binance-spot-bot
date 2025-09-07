@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Timeframe Trinity Analysis</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      body {
+        font-family: "Inter", system-ui, -apple-system, Segoe UI, Roboto,
+          sans-serif;
+        margin: 0;
+        background: #0b0d10;
+        color: #eef2f6;
+      }
+      .container {
+        max-width: 1100px;
+        margin: 0 auto;
+        padding: 20px;
+      }
+      .panel {
+        background: #12161c;
+        border: 1px solid #202a33;
+        border-radius: 10px;
+        padding: 14px;
+      }
+      .row {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      .btn {
+        appearance: none;
+        border: 1px solid #202a33;
+        background: #0f141a;
+        color: #eef2f6;
+        padding: 8px 12px;
+        border-radius: 8px;
+        cursor: pointer;
+        font-weight: 500;
+      }
+      .btn.primary {
+        background: #00cc88;
+        border-color: #00b67a;
+        color: #04150f;
+      }
+      .cards {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 10px;
+      }
+      .card {
+        background: #12161c;
+        border: 1px solid #202a33;
+        border-radius: 10px;
+        padding: 12px;
+      }
+      .card .label {
+        color: #8aa1b1;
+        font-size: 12px;
+        margin-bottom: 6px;
+      }
+      .card .value {
+        font-size: 22px;
+        font-weight: 600;
+      }
+      table {
+        border-collapse: collapse;
+        width: 100%;
+        font-size: 14px;
+        border: 1px solid #202a33;
+        border-radius: 8px;
+        overflow: hidden;
+      }
+      th,
+      td {
+        border-bottom: 1px solid #202a33;
+        padding: 8px 10px;
+      }
+      th {
+        background: #0f141a;
+        text-align: left;
+      }
+      tbody tr:nth-child(odd) {
+        background: #0f141a;
+      }
+      tbody tr:nth-child(even) {
+        background: #111820;
+      }
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        padding: 2px 8px;
+        border-radius: 999px;
+        font-size: 12px;
+        border: 1px solid #202a33;
+        background: #16232a;
+        color: #8aa1b1;
+      }
+      .pill.on {
+        background: rgba(0, 204, 136, 0.12);
+        color: #00cc88;
+        border-color: rgba(0, 204, 136, 0.25);
+      }
+      a {
+        color: #00cc88;
+        text-decoration: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div
+        style="
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
+        "
+      >
+        <h2 style="margin: 0">Timeframe Trinity Analysis</h2>
+        <div>
+          <a class="btn" href="/">Back to Dashboard</a>
+        </div>
+      </div>
+
+      <section class="panel">
+        <div class="row">
+          <label>Symbol <input id="symbol" value="BTC/USDT" /></label>
+          <label>Macro TFs <input id="macro" value="1w,1d" /></label>
+          <label>Bias TFs <input id="bias" value="4h,1h" /></label>
+          <label>Exec TFs <input id="exec" value="15m,5m" /></label>
+          <button id="analyze" class="btn primary">Analyze</button>
+        </div>
+        <div
+          class="row"
+          style="margin-top: 10px; color: #8aa1b1; font-size: 12px"
+        >
+          Enter a Binance spot symbol as BASE/QUOTE (e.g., ETH/USDT). Timeframes
+          are comma-separated.
+        </div>
+      </section>
+
+      <section style="margin-top: 16px">
+        <!-- Mock data warning banner -->
+        <div id="mockWarning" class="panel" style="display: none; border-color: #ffa500; background: rgba(255, 165, 0, 0.1);">
+          <div style="color: #ffa500; font-weight: 500;">
+            ⚠️ Demo Mode: Using mock data for demonstration due to API connectivity issues
+          </div>
+        </div>
+        
+        <div class="cards">
+          <div class="card">
+            <div class="label">Direction</div>
+            <div id="dir" class="value">—</div>
+          </div>
+          <div class="card">
+            <div class="label">Bias OK</div>
+            <div id="biasok" class="value">—</div>
+          </div>
+          <div class="card">
+            <div class="label">Execution OK</div>
+            <div id="execok" class="value">—</div>
+          </div>
+          <div class="card">
+            <div class="label">Score</div>
+            <div id="score" class="value">—</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" style="margin-top: 16px">
+        <h3 style="margin-top: 0">Macro</h3>
+        <table id="macroTbl"></table>
+      </section>
+
+      <section class="panel" style="margin-top: 16px">
+        <h3 style="margin-top: 0">Bias</h3>
+        <table id="biasTbl"></table>
+      </section>
+
+      <section class="panel" style="margin-top: 16px">
+        <h3 style="margin-top: 0">Execution</h3>
+        <table id="execTbl"></table>
+      </section>
+
+      <section class="panel" style="margin-top: 16px">
+        <h3 style="margin-top: 0">Notes</h3>
+        <div
+          id="notes"
+          style="white-space: pre-wrap; font-size: 14px; color: #cfe6d9"
+        >
+          —
+        </div>
+      </section>
+    </div>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+      const api = (path, opts = {}) =>
+        fetch(path, { cache: "no-store", ...opts }).then((r) => {
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          return r.json();
+        });
+
+      function renderTable(el, rows) {
+        el.innerHTML = "";
+        if (!rows || !rows.length) {
+          el.textContent = "No data";
+          return;
+        }
+        const headers = [
+          "timeframe",
+          "price",
+          "trend",
+          "above200",
+          "above50",
+          "above21",
+          "rsi",
+          "near_support",
+          "near_resistance",
+        ];
+        const thead = document.createElement("thead");
+        const trh = document.createElement("tr");
+        headers.forEach((h) => {
+          const th = document.createElement("th");
+          th.textContent = h;
+          trh.appendChild(th);
+        });
+        thead.appendChild(trh);
+        el.appendChild(thead);
+        const tb = document.createElement("tbody");
+        rows.forEach((r) => {
+          const tr = document.createElement("tr");
+          headers.forEach((h) => {
+            const td = document.createElement("td");
+            const v = r[h];
+            if (typeof v === "boolean") {
+              td.innerHTML =
+                '<span class="pill ' +
+                (v ? "on" : "") +
+                '">' +
+                (v ? "Yes" : "No") +
+                "</span>";
+            } else {
+              td.textContent = v == null ? "" : v;
+            }
+            tr.appendChild(td);
+          });
+          tb.appendChild(tr);
+        });
+        el.appendChild(tb);
+      }
+
+      async function analyze() {
+        try {
+          // Show loading state
+          $("analyze").textContent = "Analyzing...";
+          $("analyze").disabled = true;
+          
+          const symbol = $("symbol").value.trim();
+          const macro = $("macro")
+            .value.split(",")
+            .map((s) => s.trim())
+            .filter(Boolean);
+          const bias = $("bias")
+            .value.split(",")
+            .map((s) => s.trim())
+            .filter(Boolean);
+          const exec = $("exec")
+            .value.split(",")
+            .map((s) => s.trim())
+            .filter(Boolean);
+          
+          const res = await api("/trinity/analyze", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              symbol,
+              macro_tfs: macro,
+              bias_tfs: bias,
+              exec_tfs: exec,
+            }),
+          });
+          
+          // Show mock data warning if applicable
+          if (res.mock_data) {
+            $("mockWarning").style.display = "block";
+          } else {
+            $("mockWarning").style.display = "none";
+          }
+          
+          $("dir").textContent = res.confluence.direction;
+          $("biasok").textContent = String(res.confluence.bias_ok);
+          $("execok").textContent = String(res.confluence.execution_ok);
+          $("score").textContent = String(res.confluence.score);
+          renderTable($("macroTbl"), res.macro);
+          renderTable($("biasTbl"), res.bias);
+          renderTable($("execTbl"), res.execution);
+          $("notes").textContent = (res.confluence.notes || []).join("\n");
+        } catch (error) {
+          console.error("Analysis failed:", error);
+          alert("Analysis failed: " + (error.message || error));
+        } finally {
+          // Reset button state
+          $("analyze").textContent = "Analyze";
+          $("analyze").disabled = false;
+        }
+      }
+
+      $("analyze").addEventListener("click", analyze);
+    </script>
+  </body>
+</html>

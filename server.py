@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -8,7 +8,9 @@ import glob
 import os
 import csv
 
-from bot import load_config, run_scan, ensure_logs, ensure_signal_logs, LOG_DIR
+from bot import load_config, run_scan, ensure_logs, ensure_signal_logs, LOG_DIR, trinity_analyze, make_exchange, set_binance_host
+import traceback
+import logging
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WEB_DIR = os.path.join(BASE_DIR, "web")
 
@@ -29,6 +31,13 @@ class ScanRequest(BaseModel):
     dry_run: bool = False
 
 
+class TrinityRequest(BaseModel):
+    symbol: str
+    macro_tfs: Optional[list[str]] = None
+    bias_tfs: Optional[list[str]] = None
+    exec_tfs: Optional[list[str]] = None
+
+
 @app.get("/config")
 def get_config():
     return load_config()
@@ -41,6 +50,63 @@ def post_scan(req: ScanRequest):
         return res
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/trinity/analyze")
+def trinity_api(req: TrinityRequest):
+    try:
+        symbol = (req.symbol or '').strip().upper()
+        if not symbol or '/' not in symbol:
+            raise ValueError("Symbol must be like BTC/USDT")
+
+        # Try to create exchange, but gracefully handle failures
+        ex = None
+        network_available = True
+        
+        try:
+            cfg = load_config()
+            ex = make_exchange(cfg.get('TESTNET', True))
+            ex.load_markets()
+        except Exception:
+            # Try fallback to live
+            try:
+                ex = make_exchange(False)
+                ex.load_markets()
+            except Exception as e_live:
+                # Try alternate hosts
+                last_err = e_live
+                for host in ["api1.binance.com","api2.binance.com","api3.binance.com","api-gcp.binance.com"]:
+                    try:
+                        set_binance_host(ex, host)
+                        ex.load_markets()
+                        break
+                    except Exception as e_alt:
+                        last_err = e_alt
+                        continue
+                else:
+                    # All network attempts failed - use mock data
+                    network_available = False
+                    logging.warning("Network unavailable, using mock data for demonstration: %s", str(last_err))
+
+        res = trinity_analyze(
+            symbol=symbol,
+            exchange=ex,
+            macro_tfs=req.macro_tfs or ['1w','1d'],
+            bias_tfs=req.bias_tfs or ['4h','1h'],
+            exec_tfs=req.exec_tfs or ['15m','5m'],
+            use_mock_data=not network_available
+        )
+        
+        return JSONResponse(content=res, headers={"Cache-Control": "no-store"})
+        
+    except ValueError as e:
+        # Handle validation errors with 400 status
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logging.error("Trinity analyze failed: %s\n%s", str(e), traceback.format_exc())
+        # Return a more user-friendly error for unexpected failures
+        error_msg = "Analysis failed. This may be due to network connectivity issues or invalid symbol. Please try again or check your internet connection."
+        raise HTTPException(status_code=500, detail=error_msg)
 
 
 @app.get("/logs/signals")
@@ -121,6 +187,14 @@ def clear_signals_log():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.get("/trinity", include_in_schema=False)
+@app.get("/trinity/", include_in_schema=False)
+def trinity_page():
+    path = os.path.join(WEB_DIR, "trinity.html")
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="Trinity page not found")
+    return FileResponse(path)
 
 # Serve minimal UI from ./web (mount LAST to avoid swallowing API routes)
 app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="static")
